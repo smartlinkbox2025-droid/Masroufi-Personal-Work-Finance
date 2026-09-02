@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "مصروفي | إدارة مالية شخصية وعمل"
+description = "تطبيق ويب عربي RTL لإدارة المصروفات والدخل الشخصي والعمل والمشاريع محليًا، مع تصميم سريع مناسب للجوال وقابل للتثبيت كتطبيق PWA."
+version = "1.0.0"
+id = "artifacts/masroufi"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 19311
+
+[services.development]
+run = "pnpm --filter @workspace/masroufi run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/masroufi", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/masroufi/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "19311"
+BASE_PATH = "/"
