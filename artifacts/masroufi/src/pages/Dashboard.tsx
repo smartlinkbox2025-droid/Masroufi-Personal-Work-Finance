@@ -1,28 +1,32 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ArrowDownToLine, ArrowLeft, ArrowRight, ArrowUpRight, Briefcase, CalendarDays, ShieldCheck, Wallet } from 'lucide-react';
+import { ArrowDownToLine, ArrowUpRight, Briefcase, RotateCcw, ShieldCheck, Wallet } from 'lucide-react';
 import { Link } from 'wouter';
 import { getCategories, getExpenses, getIncomes, getPaymentMethods, getProjects } from '@/db/database';
 import { formatSAR } from '@/lib/currency';
-import { calculatePeriodSummary, currentMonthPeriod, aggregateExpenseCategories, calculateProjectPeriodTotals, comparePeriods, listPeriodTransactions, monthPeriod, previousMonthPeriod, type ReportPeriod, type ReportSources } from '@/lib/reports';
+import { calculatePeriodSummary, currentMonthPeriod, aggregateExpenseCategories, calculateProjectPeriodTotals, comparePeriods, listPeriodTransactions, periodFromDates, type ReportPeriod, type ReportSources } from '@/lib/reports';
 import { calculateProjectFinancials } from '@/lib/projects';
 
 export default function Dashboard() {
   const [sources, setSources] = useState<ReportSources | null>(null);
-  const [period, setPeriod] = useState<ReportPeriod>(currentMonthPeriod());
+  const initialPeriod = currentMonthPeriod();
+  const [from, setFrom] = useState(initialPeriod.from);
+  const [to, setTo] = useState(initialPeriod.to);
   useEffect(() => {
     void Promise.all([getExpenses(), getIncomes(), getProjects(), getCategories(), getPaymentMethods()]).then(([expenses, incomes, projects, categories, paymentMethods]) => setSources({ expenses, incomes, projects, categories, paymentMethods }));
   }, []);
-  const summary = sources ? calculatePeriodSummary(sources, period) : null;
-  const previous = sources ? calculatePeriodSummary(sources, previousMonthPeriod(period)) : null;
+  const selectedPeriod = periodFromDates(from, to);
+  const period = selectedPeriod ?? initialPeriod;
+  const summary = sources && selectedPeriod ? calculatePeriodSummary(sources, period) : null;
+  const previous = sources && selectedPeriod ? calculatePeriodSummary(sources, previousComparablePeriod(period)) : null;
   const comparison = summary && previous ? comparePeriods(summary, previous) : null;
-  const categories = sources ? aggregateExpenseCategories(sources, period).slice(0, 5) : [];
-  const recent = sources ? listPeriodTransactions(sources, period).slice(0, 7) : [];
+  const categories = sources && selectedPeriod ? aggregateExpenseCategories(sources, period).slice(0, 5) : [];
+  const recent = sources && selectedPeriod ? listPeriodTransactions(sources, period).slice(0, 7) : [];
   const activeProjects = sources?.projects.filter((project) => project.status === 'active') ?? [];
-  const projectPeriodRows = sources ? activeProjects.slice(0, 4).map((project) => {
+  const projectPeriodRows = sources && selectedPeriod ? activeProjects.slice(0, 4).map((project) => {
     const financials = calculateProjectFinancials(project, sources.incomes.filter((item) => item.date >= period.from && item.date <= period.to), sources.expenses.filter((item) => item.date >= period.from && item.date <= period.to));
     return { project, financials };
   }) : [];
-  const projectTotals = sources ? calculateProjectPeriodTotals(sources, period) : { income: 0, expenses: 0, net: 0 };
+  const projectTotals = sources && selectedPeriod ? calculateProjectPeriodTotals(sources, period) : { income: 0, expenses: 0, net: 0 };
   const primaryCards = [
     { label: 'إجمالي الدخل', amount: summary?.totalIncome ?? 0, Icon: ArrowDownToLine, tone: 'text-primary', bg: 'bg-primary/10' },
     { label: 'إجمالي المصروفات', amount: summary?.totalExpenses ?? 0, Icon: ArrowUpRight, tone: 'text-destructive', bg: 'bg-destructive/10' },
@@ -31,12 +35,19 @@ export default function Dashboard() {
   return (
     <div className="mx-auto max-w-7xl space-y-5 p-4 md:p-8">
       <header className="flex flex-col gap-4 rounded-3xl border border-border bg-card p-5 shadow-sm sm:p-7 md:flex-row md:items-center md:justify-between">
-        <div><p className="mb-2 text-sm font-bold text-primary">لوحة التحكم المالية</p><h1 className="text-2xl font-black md:text-3xl">ملخص {period.label}</h1><p className="mt-2 text-sm text-muted-foreground">كل الأرقام محسوبة من الحركات المحفوظة على هذا الجهاز.</p></div>
-        <div className="flex items-center justify-between gap-2 rounded-2xl bg-muted/60 p-1"><button type="button" aria-label="الشهر السابق" onClick={() => setPeriod(previousMonthPeriod(period))} className="rounded-xl p-2 hover:bg-card"><ArrowRight className="h-5 w-5" /></button><span className="flex items-center gap-2 px-2 text-sm font-bold"><CalendarDays className="h-4 w-4 text-primary" />{period.label}</span><button type="button" aria-label="الشهر التالي" onClick={() => setPeriod(nextMonth(period))} className="rounded-xl p-2 hover:bg-card"><ArrowLeft className="h-5 w-5" /></button></div>
+        <div><p className="mb-2 text-sm font-bold text-primary">لوحة التحكم المالية</p><h1 className="text-2xl font-black md:text-3xl">ملخص {selectedPeriod ? period.label : 'الفترة المحددة'}</h1><p className="mt-2 text-sm text-muted-foreground">كل الأرقام محسوبة من الحركات المحفوظة على هذا الجهاز.</p></div>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+          <div className="flex items-end gap-2 rounded-2xl bg-muted/60 p-2">
+            <DateField label="من تاريخ" value={from} onChange={setFrom} />
+            <DateField label="إلى تاريخ" value={to} onChange={setTo} />
+          </div>
+          <button type="button" onClick={() => { setFrom(initialPeriod.from); setTo(initialPeriod.to); }} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-primary/25 bg-primary/5 px-3 text-sm font-bold text-primary hover:bg-primary/10"><RotateCcw className="h-4 w-4" />هذا الشهر</button>
+        </div>
       </header>
+      {!selectedPeriod && <div role="alert" className="rounded-2xl border border-destructive/25 bg-destructive/5 px-4 py-3 text-sm font-bold text-destructive">تاريخ البداية يجب أن يسبق تاريخ النهاية.</div>}
       <div className="grid gap-4 md:grid-cols-3">{primaryCards.map(({ label, amount, Icon, tone, bg }, index) => <div key={`primary-${index}-${label}`} className="rounded-2xl border border-border bg-card p-5 shadow-sm"><div className={`mb-4 flex h-10 w-10 items-center justify-center rounded-full ${bg} ${tone}`}><Icon className="h-5 w-5" /></div><p className="text-sm text-muted-foreground">{label}</p><p className={`mt-2 text-2xl font-black ${tone}`} dir="ltr">{formatSAR(amount)}</p></div>)}</div>
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4"><MiniCard label="دخل العمل" value={summary?.workIncome ?? 0} /><MiniCard label="مصروفات العمل" value={summary?.workExpenses ?? 0} negative /><MiniCard label="الدخل الشخصي" value={summary?.personalIncome ?? 0} /><MiniCard label="المصروفات الشخصية" value={summary?.personalExpenses ?? 0} negative /></div>
-      <section className="grid gap-4 lg:grid-cols-3"><div className="rounded-2xl border border-border bg-card p-5 shadow-sm lg:col-span-2"><SectionTitle title="مقارنة بالشهر السابق" href="/reports" /><div className="grid gap-3 sm:grid-cols-3"><Comparison title="الدخل" item={comparison?.income} /><Comparison title="المصروفات" item={comparison?.expenses} /><Comparison title="الصافي" item={comparison?.net} /></div></div><div className="rounded-2xl border border-border bg-card p-5 shadow-sm"><SectionTitle title="المشاريع" href="/projects" /><div className="grid grid-cols-3 gap-2 text-center"><Count label="نشطة" value={sources?.projects.filter((p) => p.status === 'active').length ?? 0} /><Count label="متوقفة" value={sources?.projects.filter((p) => p.status === 'paused').length ?? 0} /><Count label="مكتملة" value={sources?.projects.filter((p) => p.status === 'completed').length ?? 0} /></div><p className="mt-4 text-sm text-muted-foreground">دخل المشاريع: <strong className="text-foreground" dir="ltr">{formatSAR(projectTotals.income)}</strong></p><p className="mt-1 text-sm text-muted-foreground">مصروفات المشاريع: <strong className="text-foreground" dir="ltr">{formatSAR(projectTotals.expenses)}</strong></p></div></section>
+      <section className="grid gap-4 lg:grid-cols-3"><div className="rounded-2xl border border-border bg-card p-5 shadow-sm lg:col-span-2"><SectionTitle title="مقارنة بالفترة السابقة" href="/reports" /><div className="grid gap-3 sm:grid-cols-3"><Comparison title="الدخل" item={comparison?.income} /><Comparison title="المصروفات" item={comparison?.expenses} /><Comparison title="الصافي" item={comparison?.net} /></div></div><div className="rounded-2xl border border-border bg-card p-5 shadow-sm"><SectionTitle title="المشاريع" href="/projects" /><div className="grid grid-cols-3 gap-2 text-center"><Count label="نشطة" value={sources?.projects.filter((p) => p.status === 'active').length ?? 0} /><Count label="متوقفة" value={sources?.projects.filter((p) => p.status === 'paused').length ?? 0} /><Count label="مكتملة" value={sources?.projects.filter((p) => p.status === 'completed').length ?? 0} /></div><p className="mt-4 text-sm text-muted-foreground">دخل المشاريع: <strong className="text-foreground" dir="ltr">{formatSAR(projectTotals.income)}</strong></p><p className="mt-1 text-sm text-muted-foreground">مصروفات المشاريع: <strong className="text-foreground" dir="ltr">{formatSAR(projectTotals.expenses)}</strong></p></div></section>
       {projectPeriodRows.length > 0 && <section className="rounded-2xl border border-border bg-card p-5 shadow-sm"><SectionTitle title="مشاريع نشطة مهمة" href="/projects" /><div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">{projectPeriodRows.map(({ project, financials }, index) => <Link key={`project-${project.id || index}`} href={`/projects/${project.id}`} className="rounded-xl bg-muted/50 p-3 transition-colors hover:bg-muted"><strong className="block truncate">{project.name}</strong><div className="mt-3 space-y-1 text-xs text-muted-foreground"><p>المستلم: <span className="text-foreground" dir="ltr">{formatSAR(financials.receivedIncome)}</span></p><p>المصروف: <span className="text-foreground" dir="ltr">{formatSAR(financials.expenses)}</span></p><p>الصافي: <span className={financials.cashFlow >= 0 ? 'text-primary' : 'text-destructive'} dir="ltr">{formatSAR(financials.cashFlow)}</span></p></div></Link>)}</div></section>}
       <div className="grid gap-4 lg:grid-cols-2"><section className="rounded-2xl border border-border bg-card p-5 shadow-sm"><SectionTitle title="أعلى تصنيفات المصروفات" href="/reports" />{categories.length ? <div className="space-y-4">{categories.map((row, index) => <div key={`category-${row.id || index}`}><div className="flex justify-between gap-3 text-sm"><span>{row.name}</span><strong dir="ltr">{formatSAR(row.amount)} · {row.percentage.toFixed(1)}%</strong></div><div className="mt-1.5 h-2 rounded-full bg-muted"><div className="h-2 rounded-full bg-primary" style={{ width: `${Math.min(row.percentage, 100)}%` }} /></div></div>)}</div> : <EmptyText text="لا توجد مصروفات في هذه الفترة." />}</section><section className="rounded-2xl border border-border bg-card p-5 shadow-sm"><SectionTitle title="أحدث الحركات" href="/expenses" />{recent.length ? <div className="divide-y divide-border">{recent.map((row, index) => <div key={`recent-${row.kind}-${row.id || index}`} className="flex items-center justify-between gap-3 py-3 text-sm"><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><span className={`rounded-full px-2 py-0.5 text-[11px] font-bold ${row.kind === 'income' ? 'bg-primary/10 text-primary' : 'bg-destructive/10 text-destructive'}`}>{row.kind === 'income' ? 'دخل' : 'مصروف'}</span><span className="truncate font-medium">{row.categoryName}</span></div><p className="mt-1 truncate text-xs text-muted-foreground">{row.date} · {row.projectName} · {row.description}</p></div><strong className={row.kind === 'income' ? 'text-primary' : 'text-destructive'} dir="ltr">{row.kind === 'income' ? '+ ' : '− '}{formatSAR(row.amount)}</strong></div>)}</div> : <EmptyText text="لا توجد حركات مالية في هذه الفترة." />}</section></div>
       <section className="rounded-2xl border border-border bg-primary/5 p-5"><div className="flex items-center gap-2 text-primary"><ShieldCheck className="h-5 w-5" /><h2 className="font-bold">خصوصية محلية</h2></div><p className="mt-2 text-sm text-muted-foreground">لا تُرسل بياناتك المالية إلى أي خادم خارجي. التقارير تعمل من IndexedDB ويمكن استخدامها دون اتصال.</p></section>
@@ -48,4 +59,15 @@ function SectionTitle({ title, href }: { title: string; href: string }) { return
 function Count({ label, value }: { label: string; value: number }) { return <div className="rounded-xl bg-muted/50 p-2"><strong className="block text-xl">{value}</strong><span className="text-[11px] text-muted-foreground">{label}</span></div>; }
 function EmptyText({ text }: { text: string }) { return <p className="py-8 text-center text-sm text-muted-foreground">{text}</p>; }
 function Comparison({ title, item }: { title: string; item?: { current: number; previous: number; difference: number; percentage: number | null } }) { return <div className="rounded-xl bg-muted/50 p-3"><p className="text-xs text-muted-foreground">{title}</p><p className="mt-1 font-bold" dir="ltr">{formatSAR(item?.current ?? 0)}</p><p className="mt-1 text-xs text-muted-foreground" dir="ltr">السابق: {formatSAR(item?.previous ?? 0)}</p><p className={`mt-1 text-xs font-bold ${(item?.difference ?? 0) >= 0 ? 'text-primary' : 'text-destructive'}`} dir="ltr">{(item?.difference ?? 0) >= 0 ? '+' : ''}{formatSAR(item?.difference ?? 0)} · {item?.percentage === null || item?.percentage === undefined ? 'لا توجد بيانات مقارنة' : `${item.percentage >= 0 ? '+' : ''}${item.percentage.toFixed(1)}%`}</p></div>; }
-function nextMonth(period: ReportPeriod) { const [year, month] = period.from.split('-').map(Number); return monthPeriod(month === 12 ? year + 1 : year, month === 12 ? 1 : month + 1); }
+function DateField({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) { return <label className="min-w-0 flex-1 sm:min-w-32"><span className="mb-1 block text-[11px] font-bold text-muted-foreground">{label}</span><input type="date" value={value} onChange={(event) => onChange(event.target.value)} className="field-input min-h-10 px-2 text-xs" dir="ltr" /></label>; }
+function previousComparablePeriod(period: ReportPeriod): ReportPeriod {
+  const from = parseDate(period.from);
+  const to = parseDate(period.to);
+  const dayCount = Math.round((to.getTime() - from.getTime()) / DAY_MS) + 1;
+  const previousTo = new Date(from.getTime() - DAY_MS);
+  const previousFrom = new Date(previousTo.getTime() - (dayCount - 1) * DAY_MS);
+  return { from: formatDate(previousFrom), to: formatDate(previousTo), label: `${formatDate(previousFrom)} — ${formatDate(previousTo)}` };
+}
+function parseDate(value: string) { return new Date(`${value}T00:00:00Z`); }
+function formatDate(value: Date) { return value.toISOString().slice(0, 10); }
+const DAY_MS = 24 * 60 * 60 * 1000;
