@@ -65,5 +65,9 @@ describe('تصدير Excel للتقرير المحدد', () => {
     expect(worksheet['!cols']?.every((column) => Number(column.wch) >= 13)).toBe(true);
     expect(worksheet.G2.z).toContain('ر.س');
     expect(worksheet.A1.s?.fill?.fgColor?.rgb).toBe('2F8069');
+    const saved = XLSX.write(workbook, { bookType: 'xlsx', type: 'array', cellStyles: true });
+    const reopened = XLSX.read(saved, { type: 'array', cellStyles: true });
+    expect(reopened.Sheets['المصروفات'].G2.z).toContain('ر.س');
+    expect(reopened.Sheets['المصروفات']['!cols']?.[0]?.width).toBeGreaterThan(0);
   });
 });
