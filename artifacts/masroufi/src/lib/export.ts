@@ -138,11 +138,63 @@ function createWorkbook(sheets: ExcelSheet[]): XLSX.WorkBook {
 }
 
 function downloadWorkbook(workbook: XLSX.WorkBook, filename: string): void {
-  const output = XLSX.write(workbook, { bookType: 'xlsx', type: 'array', cellStyles: true, compression: true });
+  const output = buildStyledExcelXml(workbook);
   downloadBlob(
-    new Blob([output], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }),
-    filename,
+    new Blob(['\uFEFF', output], { type: 'application/vnd.ms-excel;charset=utf-8' }),
+    filename.replace(/\.xlsx$/i, '.xls'),
   );
+}
+
+export function buildStyledExcelXml(workbook: XLSX.WorkBook): string {
+  const worksheets = workbook.SheetNames.map((sheetName) => {
+    const worksheet = workbook.Sheets[sheetName];
+    const matrix = XLSX.utils.sheet_to_json<ExcelValue[]>(worksheet, { header: 1, raw: true, defval: '' });
+    const headers = (matrix[0] ?? []).map(String);
+    const columnCount = Math.max(1, headers.length);
+    const rowsXml = matrix.map((row, rowIndex) => {
+      const cells = Array.from({ length: columnCount }, (_, columnIndex) => {
+        const value = row[columnIndex] ?? '';
+        const header = headers[columnIndex] ?? '';
+        const styleId = excelXmlStyleId(header, value, rowIndex);
+        const type = typeof value === 'number' ? 'Number' : 'String';
+        return `<Cell ss:StyleID="${styleId}"><Data ss:Type="${type}">${escapeXml(String(value))}</Data></Cell>`;
+      }).join('');
+      return `<Row ss:Height="${rowIndex === 0 ? 28 : 22}">${cells}</Row>`;
+    }).join('');
+    const columnsXml = Array.from({ length: columnCount }, (_, columnIndex) => {
+      const widthChars = Number(worksheet['!cols']?.[columnIndex]?.wch ?? 16);
+      return `<Column ss:AutoFitWidth="0" ss:Width="${Math.min(260, Math.max(85, widthChars * 7))}"/>`;
+    }).join('');
+    const filterRange = matrix.length > 1 ? `R1C1:R${matrix.length}C${columnCount}` : `R1C1:R1C${columnCount}`;
+    return `<Worksheet ss:Name="${escapeXml(sheetName.slice(0, 31))}"><Table ss:ExpandedColumnCount="${columnCount}" ss:ExpandedRowCount="${Math.max(1, matrix.length)}" x:FullColumns="1" x:FullRows="1">${columnsXml}${rowsXml}</Table><AutoFilter x:Range="${filterRange}" xmlns="urn:schemas-microsoft-com:office:excel"/><WorksheetOptions xmlns="urn:schemas-microsoft-com:office:excel"><DisplayRightToLeft/><FreezePanes/><FrozenNoSplit/><SplitHorizontal>1</SplitHorizontal><TopRowBottomPane>1</TopRowBottomPane><ActivePane>2</ActivePane><ProtectObjects>False</ProtectObjects><ProtectScenarios>False</ProtectScenarios></WorksheetOptions></Worksheet>`;
+  }).join('');
+
+  return `<?xml version="1.0" encoding="UTF-8"?><?mso-application progid="Excel.Sheet"?><Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"><DocumentProperties xmlns="urn:schemas-microsoft-com:office:office"><Title>تقارير مصروفي المالية</Title><Author>مصروفي</Author><Company>مصروفي</Company><Created>${new Date().toISOString()}</Created></DocumentProperties><ExcelWorkbook xmlns="urn:schemas-microsoft-com:office:excel"><ProtectStructure>False</ProtectStructure><ProtectWindows>False</ProtectWindows></ExcelWorkbook>${excelXmlStyles()}${worksheets}</Workbook>`;
+}
+
+function excelXmlStyles(): string {
+  const border = '<Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#D8E5E0"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#D8E5E0"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#D8E5E0"/></Borders>';
+  const cell = (id: string, fill: string, color: string, numberFormat = '') => `<Style ss:ID="${id}"><Alignment ss:Horizontal="Right" ss:Vertical="Center" ss:ReadingOrder="RightToLeft" ss:WrapText="1"/><Font ss:FontName="Arial" ss:Size="10" ss:Color="${color}"/><Interior ss:Color="${fill}" ss:Pattern="Solid"/>${border}${numberFormat ? `<NumberFormat ss:Format="${escapeXml(numberFormat)}"/>` : ''}</Style>`;
+  return `<Styles><Style ss:ID="Default" ss:Name="Normal"><Alignment ss:Vertical="Center" ss:ReadingOrder="RightToLeft"/><Font ss:FontName="Arial" ss:Size="10"/></Style><Style ss:ID="Header"><Alignment ss:Horizontal="Center" ss:Vertical="Center" ss:ReadingOrder="RightToLeft" ss:WrapText="1"/><Font ss:FontName="Arial" ss:Size="11" ss:Bold="1" ss:Color="#FFFFFF"/><Interior ss:Color="#2F8069" ss:Pattern="Solid"/>${border}</Style>${cell('CellOdd', '#FFFFFF', '#18332B')}${cell('CellEven', '#F7FAF9', '#18332B')}${cell('NumberOdd', '#FFFFFF', '#18332B', '#,##0.00')}${cell('NumberEven', '#F7FAF9', '#18332B', '#,##0.00')}${cell('MoneyOdd', '#FFFFFF', '#167D5C', '#,##0.00 &quot;ر.س&quot;')}${cell('MoneyEven', '#F7FAF9', '#167D5C', '#,##0.00 &quot;ر.س&quot;')}${cell('MoneyNegativeOdd', '#FFF7F7', '#C53D3D', '#,##0.00 &quot;ر.س&quot;')}${cell('MoneyNegativeEven', '#FDEEEE', '#C53D3D', '#,##0.00 &quot;ر.س&quot;')}${cell('PercentOdd', '#FFFFFF', '#18332B', '0.00%')}${cell('PercentEven', '#F7FAF9', '#18332B', '0.00%')}</Styles>`;
+}
+
+function excelXmlStyleId(header: string, value: ExcelValue, rowIndex: number): string {
+  if (rowIndex === 0) return 'Header';
+  const stripe = rowIndex % 2 === 0 ? 'Even' : 'Odd';
+  if (typeof value === 'number' && moneyHeaders.has(header)) return value < 0 ? `MoneyNegative${stripe}` : `Money${stripe}`;
+  if (typeof value === 'number' && percentageHeaders.has(header)) return `Percent${stripe}`;
+  if (typeof value === 'number') return `Number${stripe}`;
+  return `Cell${stripe}`;
+}
+
+function escapeXml(value: string): string {
+  return value.replace(/[&<>"']/g, (character) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&apos;',
+  })[character] ?? character);
 }
 
 function exportWorkbook(sheets: ExcelSheet[], filename: string): void {

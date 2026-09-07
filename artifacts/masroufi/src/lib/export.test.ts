@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import * as XLSX from 'xlsx';
-import { buildMonthlyReportWorkbook } from './export';
+import { buildMonthlyReportWorkbook, buildStyledExcelXml } from './export';
 import { monthPeriod, type ReportSources } from './reports';
 
 const sources: ReportSources = {
@@ -65,9 +65,11 @@ describe('تصدير Excel للتقرير المحدد', () => {
     expect(worksheet['!cols']?.every((column) => Number(column.wch) >= 13)).toBe(true);
     expect(worksheet.G2.z).toContain('ر.س');
     expect(worksheet.A1.s?.fill?.fgColor?.rgb).toBe('2F8069');
-    const saved = XLSX.write(workbook, { bookType: 'xlsx', type: 'array', cellStyles: true });
-    const reopened = XLSX.read(saved, { type: 'array', cellStyles: true });
-    expect(reopened.Sheets['المصروفات'].G2.z).toContain('ر.س');
-    expect(reopened.Sheets['المصروفات']['!cols']?.[0]?.width).toBeGreaterThan(0);
+    const saved = buildStyledExcelXml(workbook);
+    expect(saved).toContain('ss:Color="#2F8069"');
+    expect(saved).toContain('<DisplayRightToLeft/>');
+    expect(saved).toContain('<FreezePanes/>');
+    expect(saved).toContain('AutoFilter');
+    expect(saved).toContain('#,##0.00 &amp;quot;ر.س&amp;quot;');
   });
 });
