@@ -138,15 +138,17 @@ function createWorkbook(sheets: ExcelSheet[]): XLSX.WorkBook {
 }
 
 function downloadWorkbook(workbook: XLSX.WorkBook, filename: string): void {
-  const output = buildStyledExcelXml(workbook);
+  const output = buildStyledExcelXlsx(workbook);
+  const blobBytes = new Uint8Array(output.byteLength);
+  blobBytes.set(output);
   downloadBlob(
-    new Blob(['\uFEFF', output], { type: 'application/vnd.ms-excel;charset=utf-8' }),
-    filename.replace(/\.xlsx$/i, '.xls'),
+    new Blob([blobBytes.buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }),
+    filename,
   );
 }
 
-export function buildStyledExcelXml(workbook: XLSX.WorkBook): string {
-  const worksheets = workbook.SheetNames.map((sheetName) => {
+export function buildStyledExcelXlsx(workbook: XLSX.WorkBook): Uint8Array {
+  const sheets = workbook.SheetNames.map((sheetName, index) => {
     const worksheet = workbook.Sheets[sheetName];
     const matrix = XLSX.utils.sheet_to_json<ExcelValue[]>(worksheet, { header: 1, raw: true, defval: '' });
     const headers = (matrix[0] ?? []).map(String);
@@ -155,36 +157,181 @@ export function buildStyledExcelXml(workbook: XLSX.WorkBook): string {
       const cells = Array.from({ length: columnCount }, (_, columnIndex) => {
         const value = row[columnIndex] ?? '';
         const header = headers[columnIndex] ?? '';
-        const styleId = excelXmlStyleId(header, value, rowIndex);
-        const type = typeof value === 'number' ? 'Number' : 'String';
-        return `<Cell ss:StyleID="${styleId}"><Data ss:Type="${type}">${escapeXml(String(value))}</Data></Cell>`;
+        const styleId = excelXlsxStyleId(header, value, rowIndex);
+        const ref = `${columnName(columnIndex + 1)}${rowIndex + 1}`;
+        return typeof value === 'number'
+          ? `<c r="${ref}" s="${styleId}"><v>${value}</v></c>`
+          : `<c r="${ref}" s="${styleId}" t="inlineStr"><is><t>${escapeXml(String(value))}</t></is></c>`;
       }).join('');
-      return `<Row ss:Height="${rowIndex === 0 ? 28 : 22}">${cells}</Row>`;
+      return `<row r="${rowIndex + 1}" ht="${rowIndex === 0 ? 28 : 22}" customHeight="1">${cells}</row>`;
     }).join('');
     const columnsXml = Array.from({ length: columnCount }, (_, columnIndex) => {
       const widthChars = Number(worksheet['!cols']?.[columnIndex]?.wch ?? 16);
-      return `<Column ss:AutoFitWidth="0" ss:Width="${Math.min(260, Math.max(85, widthChars * 7))}"/>`;
+      return `<col min="${columnIndex + 1}" max="${columnIndex + 1}" width="${Math.min(42, Math.max(13, widthChars))}" customWidth="1"/>`;
     }).join('');
-    const filterRange = matrix.length > 1 ? `R1C1:R${matrix.length}C${columnCount}` : `R1C1:R1C${columnCount}`;
-    return `<Worksheet ss:Name="${escapeXml(sheetName.slice(0, 31))}"><Table ss:ExpandedColumnCount="${columnCount}" ss:ExpandedRowCount="${Math.max(1, matrix.length)}" x:FullColumns="1" x:FullRows="1">${columnsXml}${rowsXml}</Table><AutoFilter x:Range="${filterRange}" xmlns="urn:schemas-microsoft-com:office:excel"/><WorksheetOptions xmlns="urn:schemas-microsoft-com:office:excel"><DisplayRightToLeft/><FreezePanes/><FrozenNoSplit/><SplitHorizontal>1</SplitHorizontal><TopRowBottomPane>1</TopRowBottomPane><ActivePane>2</ActivePane><ProtectObjects>False</ProtectObjects><ProtectScenarios>False</ProtectScenarios></WorksheetOptions></Worksheet>`;
-  }).join('');
-
-  return `<?xml version="1.0" encoding="UTF-8"?><?mso-application progid="Excel.Sheet"?><Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"><DocumentProperties xmlns="urn:schemas-microsoft-com:office:office"><Title>تقارير مصروفي المالية</Title><Author>مصروفي</Author><Company>مصروفي</Company><Created>${new Date().toISOString()}</Created></DocumentProperties><ExcelWorkbook xmlns="urn:schemas-microsoft-com:office:excel"><ProtectStructure>False</ProtectStructure><ProtectWindows>False</ProtectWindows></ExcelWorkbook>${excelXmlStyles()}${worksheets}</Workbook>`;
+    const lastRow = Math.max(1, matrix.length);
+    const lastColumn = columnName(columnCount);
+    return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetPr><pageSetUpPr fitToPage="1"/></sheetPr><dimension ref="A1:${lastColumn}${lastRow}"/><sheetViews><sheetView showGridLines="0" rightToLeft="1" workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><sheetFormatPr defaultRowHeight="22"/><cols>${columnsXml}</cols><sheetData>${rowsXml}</sheetData><autoFilter ref="A1:${lastColumn}${lastRow}"/><pageMargins left="0.3" right="0.3" top="0.5" bottom="0.5" header="0.2" footer="0.2"/><pageSetup orientation="landscape" fitToWidth="1" fitToHeight="0"/></worksheet>`;
+  });
+  const parts: ZipPart[] = [
+    { name: '[Content_Types].xml', content: contentTypesXml(sheets.length) },
+    { name: '_rels/.rels', content: rootRelationshipsXml() },
+    { name: 'docProps/core.xml', content: corePropertiesXml() },
+    { name: 'docProps/app.xml', content: appPropertiesXml(workbook.SheetNames) },
+    { name: 'xl/workbook.xml', content: workbookXml(workbook.SheetNames) },
+    { name: 'xl/_rels/workbook.xml.rels', content: workbookRelationshipsXml(sheets.length) },
+    { name: 'xl/styles.xml', content: xlsxStylesXml() },
+    ...sheets.map((content, index) => ({ name: `xl/worksheets/sheet${index + 1}.xml`, content })),
+  ];
+  return zipStore(parts);
 }
 
-function excelXmlStyles(): string {
-  const border = '<Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#D8E5E0"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#D8E5E0"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#D8E5E0"/></Borders>';
-  const cell = (id: string, fill: string, color: string, numberFormat = '') => `<Style ss:ID="${id}"><Alignment ss:Horizontal="Right" ss:Vertical="Center" ss:ReadingOrder="RightToLeft" ss:WrapText="1"/><Font ss:FontName="Arial" ss:Size="10" ss:Color="${color}"/><Interior ss:Color="${fill}" ss:Pattern="Solid"/>${border}${numberFormat ? `<NumberFormat ss:Format="${escapeXml(numberFormat)}"/>` : ''}</Style>`;
-  return `<Styles><Style ss:ID="Default" ss:Name="Normal"><Alignment ss:Vertical="Center" ss:ReadingOrder="RightToLeft"/><Font ss:FontName="Arial" ss:Size="10"/></Style><Style ss:ID="Header"><Alignment ss:Horizontal="Center" ss:Vertical="Center" ss:ReadingOrder="RightToLeft" ss:WrapText="1"/><Font ss:FontName="Arial" ss:Size="11" ss:Bold="1" ss:Color="#FFFFFF"/><Interior ss:Color="#2F8069" ss:Pattern="Solid"/>${border}</Style>${cell('CellOdd', '#FFFFFF', '#18332B')}${cell('CellEven', '#F7FAF9', '#18332B')}${cell('NumberOdd', '#FFFFFF', '#18332B', '#,##0.00')}${cell('NumberEven', '#F7FAF9', '#18332B', '#,##0.00')}${cell('MoneyOdd', '#FFFFFF', '#167D5C', '#,##0.00 &quot;ر.س&quot;')}${cell('MoneyEven', '#F7FAF9', '#167D5C', '#,##0.00 &quot;ر.س&quot;')}${cell('MoneyNegativeOdd', '#FFF7F7', '#C53D3D', '#,##0.00 &quot;ر.س&quot;')}${cell('MoneyNegativeEven', '#FDEEEE', '#C53D3D', '#,##0.00 &quot;ر.س&quot;')}${cell('PercentOdd', '#FFFFFF', '#18332B', '0.00%')}${cell('PercentEven', '#F7FAF9', '#18332B', '0.00%')}</Styles>`;
-}
-
-function excelXmlStyleId(header: string, value: ExcelValue, rowIndex: number): string {
-  if (rowIndex === 0) return 'Header';
+function excelXlsxStyleId(header: string, value: ExcelValue, rowIndex: number): number {
+  if (rowIndex === 0) return 1;
   const stripe = rowIndex % 2 === 0 ? 'Even' : 'Odd';
-  if (typeof value === 'number' && moneyHeaders.has(header)) return value < 0 ? `MoneyNegative${stripe}` : `Money${stripe}`;
-  if (typeof value === 'number' && percentageHeaders.has(header)) return `Percent${stripe}`;
-  if (typeof value === 'number') return `Number${stripe}`;
-  return `Cell${stripe}`;
+  if (typeof value === 'number' && moneyHeaders.has(header)) return value < 0 ? (stripe === 'Even' ? 9 : 8) : (stripe === 'Even' ? 7 : 6);
+  if (typeof value === 'number' && percentageHeaders.has(header)) return stripe === 'Even' ? 11 : 10;
+  if (typeof value === 'number') return stripe === 'Even' ? 5 : 4;
+  return stripe === 'Even' ? 3 : 2;
+}
+
+function columnName(column: number): string {
+  let name = '';
+  for (let value = column; value > 0; value = Math.floor((value - 1) / 26)) name = String.fromCharCode(65 + ((value - 1) % 26)) + name;
+  return name;
+}
+
+function xlsxStylesXml(): string {
+  const fonts = `<fonts count="4"><font><sz val="10"/><name val="Arial"/></font><font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Arial"/></font><font><color rgb="FF18332B"/><sz val="10"/><name val="Arial"/></font><font><color rgb="FFC53D3D"/><sz val="10"/><name val="Arial"/></font></fonts>`;
+  const fills = `<fills count="6"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF2F8069"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFFFFFF"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFF7FAF9"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFDEEEE"/><bgColor indexed="64"/></patternFill></fill></fills>`;
+  const border = `<border><left style="thin"><color rgb="FFD8E5E0"/></left><right style="thin"><color rgb="FFD8E5E0"/></right><bottom style="thin"><color rgb="FFD8E5E0"/></bottom><diagonal/></border>`;
+  const borders = `<borders count="2"><border/><${border.slice(1)}</borders>`;
+  const alignment = `<alignment horizontal="right" vertical="center" readingOrder="2" wrapText="1"/>`;
+  const headerAlignment = `<alignment horizontal="center" vertical="center" readingOrder="2" wrapText="1"/>`;
+  const xfs = [
+    '<xf numFmtId="0" fontId="0" fillId="0" borderId="0"/>',
+    `<xf numFmtId="0" fontId="1" fillId="2" borderId="1" applyAlignment="1">${headerAlignment}</xf>`,
+    `<xf numFmtId="0" fontId="2" fillId="3" borderId="1" applyAlignment="1">${alignment}</xf>`,
+    `<xf numFmtId="0" fontId="2" fillId="4" borderId="1" applyAlignment="1">${alignment}</xf>`,
+    `<xf numFmtId="0" fontId="2" fillId="3" borderId="1" applyAlignment="1">${alignment}</xf>`,
+    `<xf numFmtId="0" fontId="2" fillId="4" borderId="1" applyAlignment="1">${alignment}</xf>`,
+    `<xf numFmtId="164" fontId="2" fillId="3" borderId="1" applyAlignment="1">${alignment}</xf>`,
+    `<xf numFmtId="164" fontId="2" fillId="4" borderId="1" applyAlignment="1">${alignment}</xf>`,
+    `<xf numFmtId="164" fontId="3" fillId="3" borderId="1" applyAlignment="1">${alignment}</xf>`,
+    `<xf numFmtId="164" fontId="3" fillId="5" borderId="1" applyAlignment="1">${alignment}</xf>`,
+    `<xf numFmtId="165" fontId="2" fillId="3" borderId="1" applyAlignment="1">${alignment}</xf>`,
+    `<xf numFmtId="165" fontId="2" fillId="4" borderId="1" applyAlignment="1">${alignment}</xf>`,
+  ];
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><numFmts count="2"><numFmt numFmtId="164" formatCode="#,##0.00 &quot;ر.س&quot;"/><numFmt numFmtId="165" formatCode="0.00%"/></numFmts>${fonts}${fills}${borders}<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="${xfs.length}">${xfs.join('')}</cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
+}
+
+function contentTypesXml(sheetCount: number): string {
+  const overrides = Array.from({ length: sheetCount }, (_, index) => `<Override PartName="/xl/worksheets/sheet${index + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('');
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/><Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/><Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>${overrides}</Types>`;
+}
+
+function rootRelationshipsXml(): string {
+  return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/></Relationships>';
+}
+
+function workbookXml(sheetNames: string[]): string {
+  const sheets = sheetNames.map((name, index) => `<sheet name="${escapeXml(name.slice(0, 31))}" sheetId="${index + 1}" r:id="rId${index + 1}"/>`).join('');
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><fileVersion appName="xl"/><workbookPr/><bookViews><workbookView xWindow="0" yWindow="0" rightToLeft="1"/></bookViews><sheets>${sheets}</sheets></workbook>`;
+}
+
+function workbookRelationshipsXml(sheetCount: number): string {
+  const sheets = Array.from({ length: sheetCount }, (_, index) => `<Relationship Id="rId${index + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${index + 1}.xml"/>`).join('');
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${sheets}<Relationship Id="rId${sheetCount + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`;
+}
+
+function corePropertiesXml(): string {
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>تقارير مصروفي المالية</dc:title><dc:creator>مصروفي</dc:creator><cp:lastModifiedBy>مصروفي</cp:lastModifiedBy></cp:coreProperties>`;
+}
+
+function appPropertiesXml(sheetNames: string[]): string {
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes"><Application>مصروفي</Application><HeadingPairs><vt:vector size="2" baseType="variant"><vt:variant><vt:lpstr>Worksheets</vt:lpstr></vt:variant><vt:variant><vt:i4>${sheetNames.length}</vt:i4></vt:variant></vt:vector></HeadingPairs><TitlesOfParts><vt:vector size="${sheetNames.length}" baseType="lpstr">${sheetNames.map((name) => `<vt:lpstr>${escapeXml(name)}</vt:lpstr>`).join('')}</vt:vector></TitlesOfParts></Properties>`;
+}
+
+type ZipPart = { name: string; content: string };
+
+function zipStore(parts: ZipPart[]): Uint8Array {
+  const encoder = new TextEncoder();
+  const chunks: Uint8Array[] = [];
+  const central: Uint8Array[] = [];
+  let offset = 0;
+  for (const part of parts) {
+    const name = encoder.encode(part.name);
+    const data = encoder.encode(part.content);
+    const crc = crc32(data);
+    const local = new Uint8Array(30 + name.length + data.length);
+    writeZipHeader(local, 0x04034b50, 30, crc, data.length, data.length, name.length, 0);
+    local.set(name, 30);
+    local.set(data, 30 + name.length);
+    chunks.push(local);
+    const entry = new Uint8Array(46 + name.length);
+    writeZipHeader(entry, 0x02014b50, 46, crc, data.length, data.length, name.length, offset, true);
+    entry.set(name, 46);
+    central.push(entry);
+    offset += local.length;
+  }
+  const centralOffset = offset;
+  const centralSize = central.reduce((sum, entry) => sum + entry.length, 0);
+  chunks.push(...central);
+  const end = new Uint8Array(22);
+  write32(end, 0, 0x06054b50);
+  write16(end, 8, parts.length);
+  write16(end, 10, parts.length);
+  write32(end, 12, centralSize);
+  write32(end, 16, centralOffset);
+  chunks.push(end);
+  const result = new Uint8Array(chunks.reduce((sum, chunk) => sum + chunk.length, 0));
+  let cursor = 0;
+  for (const chunk of chunks) { result.set(chunk, cursor); cursor += chunk.length; }
+  return result;
+}
+
+function writeZipHeader(buffer: Uint8Array, signature: number, _headerSize: number, crc: number, compressedSize: number, size: number, nameLength: number, offset = 0, central = false): void {
+  write32(buffer, 0, signature);
+  if (central) {
+    write16(buffer, 4, 20);
+    write16(buffer, 6, 20);
+    write16(buffer, 8, 0x800);
+    write16(buffer, 10, 0);
+    write16(buffer, 12, 0);
+    write16(buffer, 14, 0);
+    write32(buffer, 16, crc);
+    write32(buffer, 20, compressedSize);
+    write32(buffer, 24, size);
+    write16(buffer, 28, nameLength);
+    write16(buffer, 30, 0);
+    write16(buffer, 32, 0);
+    write16(buffer, 34, 0);
+    write16(buffer, 36, 0);
+    write32(buffer, 38, 0);
+    write32(buffer, 42, offset);
+  } else {
+    write16(buffer, 4, 20);
+    write16(buffer, 6, 0x800);
+    write16(buffer, 8, 0);
+    write16(buffer, 10, 0);
+    write16(buffer, 12, 0);
+    write32(buffer, 14, crc);
+    write32(buffer, 18, compressedSize);
+    write32(buffer, 22, size);
+    write16(buffer, 26, nameLength);
+    write16(buffer, 28, 0);
+  }
+}
+
+function write16(buffer: Uint8Array, offset: number, value: number): void { buffer[offset] = value & 0xff; buffer[offset + 1] = (value >>> 8) & 0xff; }
+function write32(buffer: Uint8Array, offset: number, value: number): void { buffer[offset] = value & 0xff; buffer[offset + 1] = (value >>> 8) & 0xff; buffer[offset + 2] = (value >>> 16) & 0xff; buffer[offset + 3] = (value >>> 24) & 0xff; }
+function crc32(data: Uint8Array): number {
+  let crc = 0xffffffff;
+  for (const byte of data) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit += 1) crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
 }
 
 function escapeXml(value: string): string {
