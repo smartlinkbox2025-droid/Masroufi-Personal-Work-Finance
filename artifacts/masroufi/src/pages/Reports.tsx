@@ -143,7 +143,7 @@ function ReportShell({ reportRef, title, filters, children, onExportExcel }: { r
     if (reportRef.current) void exportReportElementToPdf(reportRef.current, title);
   };
   return <div className="space-y-4">
-    <div className="flex flex-col gap-4 rounded-2xl border border-border bg-card p-4 shadow-sm sm:flex-row sm:items-end sm:justify-between">
+    <div data-export-exclude className="flex flex-col gap-4 rounded-2xl border border-border bg-card p-4 shadow-sm sm:flex-row sm:items-end sm:justify-between">
       <div>
         <p className="text-xs font-bold text-primary">مصروفي · تقرير رقمي</p>
         <h2 className="mt-1 text-xl font-black">{title}</h2>
@@ -151,9 +151,9 @@ function ReportShell({ reportRef, title, filters, children, onExportExcel }: { r
       </div>
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
         {filters}
-        <div className="flex gap-2">
-          {onExportExcel && <button type="button" onClick={onExportExcel} className="inline-flex items-center justify-center gap-2 rounded-xl border border-primary/30 bg-primary/5 px-3 py-2.5 text-sm font-bold text-primary hover:bg-primary/10"><Download className="h-4 w-4" />تصدير Excel</button>}
-          {onExportExcel && <button type="button" onClick={exportPdf} className="inline-flex items-center justify-center gap-2 rounded-xl border border-border bg-background px-3 py-2.5 text-sm font-bold hover:bg-muted"><FileDown className="h-4 w-4" />تصدير PDF</button>}
+        <div className="grid grid-cols-2 gap-2 sm:flex">
+          {onExportExcel && <button type="button" onClick={onExportExcel} className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-xl border border-primary/30 bg-primary/5 px-3 py-2.5 text-sm font-bold text-primary hover:bg-primary/10 sm:w-auto"><Download className="h-4 w-4" />تصدير Excel</button>}
+          {onExportExcel && <button type="button" onClick={exportPdf} className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-xl border border-border bg-background px-3 py-2.5 text-sm font-bold hover:bg-muted sm:w-auto"><FileDown className="h-4 w-4" />تصدير PDF</button>}
         </div>
       </div>
     </div>

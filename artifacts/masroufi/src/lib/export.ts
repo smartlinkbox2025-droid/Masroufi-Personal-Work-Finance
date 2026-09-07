@@ -34,22 +34,111 @@ function safeFilename(value: string): string {
   return value.replace(/[^\p{L}\p{N}_-]+/gu, '-').replace(/^-+|-+$/g, '') || 'masroufi-report';
 }
 
-type ExcelSheet = { name: string; rows: Array<Record<string, string | number>> };
+type ExcelValue = string | number;
+type ExcelSheet = { name: string; rows: Array<Record<string, ExcelValue>> };
+
+const EXCEL_COLORS = {
+  primary: '2F8069',
+  primaryDark: '1E594A',
+  primarySoft: 'E9F4F0',
+  white: 'FFFFFF',
+  text: '18332B',
+  border: 'D8E5E0',
+  positive: '167D5C',
+  negative: 'C53D3D',
+};
+
+const moneyHeaders = new Set([
+  'القيمة', 'المبلغ', 'الدخل', 'المصروف', 'المصروفات', 'الصافي',
+  'قيمة العقد', 'الميزانية', 'إجمالي المستلم', 'إجمالي المصروف',
+  'المتبقي من العقد', 'المتبقي من الميزانية',
+]);
+
+const percentageHeaders = new Set(['النسبة']);
+
+function displayLength(value: ExcelValue): number {
+  return String(value ?? '').replace(/[\u0600-\u06ff]/g, 'aa').length;
+}
+
+function styleWorksheet(worksheet: XLSX.WorkSheet, rows: ExcelSheet['rows']): void {
+  const headers = Object.keys(rows[0] ?? { البيان: '', القيمة: '' });
+  const range = XLSX.utils.decode_range(worksheet['!ref'] ?? 'A1:A1');
+  worksheet['!rtl'] = true;
+  worksheet['!autofilter'] = { ref: XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: 0, c: range.e.c } }) };
+  worksheet['!freeze'] = { xSplit: 0, ySplit: 1, topLeftCell: 'A2', activePane: 'bottomLeft', state: 'frozen' };
+  worksheet['!rows'] = [{ hpt: 28 }, ...rows.map(() => ({ hpt: 22 }))];
+  worksheet['!cols'] = headers.map((header) => {
+    const contentWidth = Math.max(header.length + 3, ...rows.map((row) => displayLength(row[header] ?? '')));
+    return { wch: Math.min(42, Math.max(13, contentWidth + 2)) };
+  });
+
+  for (let column = 0; column <= range.e.c; column += 1) {
+    const headerAddress = XLSX.utils.encode_cell({ r: 0, c: column });
+    const headerCell = worksheet[headerAddress];
+    if (headerCell) {
+      headerCell.s = {
+        font: { bold: true, color: { rgb: EXCEL_COLORS.white }, sz: 12 },
+        fill: { patternType: 'solid', fgColor: { rgb: EXCEL_COLORS.primary } },
+        alignment: { horizontal: 'center', vertical: 'center', readingOrder: 2, wrapText: true },
+        border: {
+          top: { style: 'thin', color: { rgb: EXCEL_COLORS.primaryDark } },
+          bottom: { style: 'thin', color: { rgb: EXCEL_COLORS.primaryDark } },
+          left: { style: 'thin', color: { rgb: EXCEL_COLORS.primaryDark } },
+          right: { style: 'thin', color: { rgb: EXCEL_COLORS.primaryDark } },
+        },
+      };
+    }
+  }
+
+  for (let rowIndex = 1; rowIndex <= range.e.r; rowIndex += 1) {
+    for (let column = 0; column <= range.e.c; column += 1) {
+      const address = XLSX.utils.encode_cell({ r: rowIndex, c: column });
+      const cell = worksheet[address];
+      if (!cell) continue;
+      const header = headers[column];
+      if (typeof cell.v === 'number' && moneyHeaders.has(header)) cell.z = '#,##0.00 "ر.س"';
+      if (typeof cell.v === 'number' && percentageHeaders.has(header)) cell.z = '0.00%';
+      const isNegative = typeof cell.v === 'number' && cell.v < 0;
+      cell.s = {
+        font: { color: { rgb: isNegative ? EXCEL_COLORS.negative : EXCEL_COLORS.text } },
+        fill: { patternType: 'solid', fgColor: { rgb: rowIndex % 2 === 0 ? 'F7FAF9' : EXCEL_COLORS.white } },
+        alignment: {
+          horizontal: typeof cell.v === 'number' ? 'center' : 'right',
+          vertical: 'center',
+          readingOrder: 2,
+          wrapText: true,
+        },
+        border: {
+          bottom: { style: 'thin', color: { rgb: EXCEL_COLORS.border } },
+          left: { style: 'thin', color: { rgb: EXCEL_COLORS.border } },
+          right: { style: 'thin', color: { rgb: EXCEL_COLORS.border } },
+        },
+      };
+    }
+  }
+}
 
 function createWorkbook(sheets: ExcelSheet[]): XLSX.WorkBook {
   const workbook = XLSX.utils.book_new();
+  workbook.Props = {
+    Title: 'تقارير مصروفي المالية',
+    Subject: 'تقرير مالي مُصدّر من تطبيق مصروفي',
+    Author: 'مصروفي',
+    Company: 'مصروفي',
+    CreatedDate: new Date(),
+  };
+  workbook.Workbook = { Views: [{ RTL: true }] };
   sheets.forEach(({ name, rows }) => {
-    const worksheet = XLSX.utils.json_to_sheet(rows);
-    worksheet['!cols'] = Object.keys(rows[0] ?? {}).map((key) => ({
-      wch: Math.min(34, Math.max(12, key.length + 5)),
-    }));
+    const normalizedRows = rows.length ? rows : [{ البيان: 'لا توجد بيانات', القيمة: '—' }];
+    const worksheet = XLSX.utils.json_to_sheet(normalizedRows);
+    styleWorksheet(worksheet, normalizedRows);
     XLSX.utils.book_append_sheet(workbook, worksheet, name.slice(0, 31));
   });
   return workbook;
 }
 
 function downloadWorkbook(workbook: XLSX.WorkBook, filename: string): void {
-  const output = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
+  const output = XLSX.write(workbook, { bookType: 'xlsx', type: 'array', cellStyles: true, compression: true });
   downloadBlob(
     new Blob([output], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }),
     filename,

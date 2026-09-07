@@ -58,5 +58,12 @@ describe('تصدير Excel للتقرير المحدد', () => {
     expect(typeof expenseSheet[0]['المبلغ']).toBe('number');
     expect(expenseSheet[0]['المبلغ']).toBe(2500.75);
     expect(expenseSheet[0]['المشروع']).toBe('مشروع عمارة سكنية');
+    const worksheet = workbook.Sheets['المصروفات'];
+    expect(worksheet['!rtl']).toBe(true);
+    expect(worksheet['!freeze']).toMatchObject({ ySplit: 1, state: 'frozen' });
+    expect(worksheet['!autofilter']?.ref).toBe('A1:H1');
+    expect(worksheet['!cols']?.every((column) => Number(column.wch) >= 13)).toBe(true);
+    expect(worksheet.G2.z).toContain('ر.س');
+    expect(worksheet.A1.s?.fill?.fgColor?.rgb).toBe('2F8069');
   });
 });
