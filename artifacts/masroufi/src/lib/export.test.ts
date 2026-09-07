@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import * as XLSX from 'xlsx';
-import { buildMonthlyReportWorkbook, buildStyledExcelXml } from './export';
+import { buildMonthlyReportWorkbook, buildStyledExcelXlsx } from './export';
 import { monthPeriod, type ReportSources } from './reports';
 
 const sources: ReportSources = {
@@ -65,11 +65,15 @@ describe('تصدير Excel للتقرير المحدد', () => {
     expect(worksheet['!cols']?.every((column) => Number(column.wch) >= 13)).toBe(true);
     expect(worksheet.G2.z).toContain('ر.س');
     expect(worksheet.A1.s?.fill?.fgColor?.rgb).toBe('2F8069');
-    const saved = buildStyledExcelXml(workbook);
-    expect(saved).toContain('ss:Color="#2F8069"');
-    expect(saved).toContain('<DisplayRightToLeft/>');
-    expect(saved).toContain('<FreezePanes/>');
-    expect(saved).toContain('AutoFilter');
-    expect(saved).toContain('#,##0.00 &amp;quot;ر.س&amp;quot;');
+    const saved = buildStyledExcelXlsx(workbook);
+    const savedText = new TextDecoder().decode(saved);
+    expect(savedText).toContain('FF2F8069');
+    expect(savedText).toContain('rightToLeft="1"');
+    expect(savedText).toContain('state="frozen"');
+    expect(savedText).toContain('autoFilter ref=');
+    expect(savedText).toContain('ر.س');
+    const reopened = XLSX.read(saved, { type: 'array' });
+    expect(reopened.SheetNames).toEqual(workbook.SheetNames);
+    expect(XLSX.utils.sheet_to_json<Record<string, string | number>>(reopened.Sheets['المصروفات'])[0]['المبلغ']).toBe(2500.75);
   });
 });
